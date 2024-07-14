@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -19,9 +20,41 @@ func main() {
 
 	argsLength := flag.NArg()
 
+	var reader io.Reader
+	var err error
+	var fileName string
+	var resetFunction func(io.Reader) io.Reader
+
 	if argsLength != 1 {
-		fmt.Println("You must provide a file")
-		os.Exit(1)
+		stdin := bufio.NewReader(os.Stdin)
+		dupBuf := new(bytes.Buffer)
+		reader = io.TeeReader(stdin, dupBuf)
+
+		resetFunction = func(r io.Reader) io.Reader {
+			return dupBuf
+		}
+	} else {
+		fileName := flag.Arg(0)
+		reader, err = os.Open(fileName)
+
+		defer func() {
+			fileReader := reader.(*os.File)
+			err := fileReader.Close()
+			if err != nil {
+				panic(err)
+			}
+		}()
+
+		if err != nil {
+			fmt.Printf("Failed to open file: %v\n", err)
+			os.Exit(1)
+		}
+
+		resetFunction = func(r io.Reader) io.Reader {
+			fileReader := r.(*os.File)
+			fileReader.Seek(0, io.SeekStart)
+			return fileReader
+		}
 	}
 
 	cliFlags := flag.NFlag()
@@ -36,28 +69,45 @@ func main() {
 			if len(values) != 3 {
 				panic("wrong number of values")
 			}
-			fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+			if filename != "" {
+				fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+			} else {
+				fmt.Printf("    %d   %d  %d\n", values[0], values[1], values[2])
+			}
 		}
 	case 1:
 		outputFormat = func(filename string, values []int) {
 			if len(values) != 1 {
 				panic("wrong number of values")
 			}
-			fmt.Printf("  %d %s\n", values[0], filename)
+			if filename != "" {
+				fmt.Printf("  %d %s\n", values[0], filename)
+			} else {
+				fmt.Printf("  %d\n", values[0])
+			}
 		}
 	case 2:
 		outputFormat = func(filename string, values []int) {
 			if len(values) != 2 {
 				panic("wrong number of values")
 			}
-			fmt.Printf("   %d  %d %s\n", values[0], values[1], filename)
+			if filename != "" {
+				fmt.Printf("   %d  %d %s\n", values[0], values[1], filename)
+			} else {
+				fmt.Printf("   %d  %d\n", values[0], values[1])
+			}
 		}
 	case 3:
 		outputFormat = func(filename string, values []int) {
 			if len(values) != 3 {
 				panic("wrong number of values")
 			}
-			fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+			if filename != "" {
+				fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+			} else {
+				fmt.Printf("    %d   %d  %d\n", values[0], values[1], values[2])
+			}
+
 		}
 	case 4:
 		// Means that we've pass bytes and characters.
@@ -68,26 +118,21 @@ func main() {
 			if len(values) != 3 {
 				panic("wrong number of values")
 			}
-			fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+			if filename != "" {
+				fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+			} else {
+				fmt.Printf("    %d   %d  %d\n", values[0], values[1], values[2])
+			}
 		}
 	default:
 		panic("wrong number of flags")
-	}
-
-	fileName := flag.Arg(0)
-
-	file, err := os.Open(fileName)
-	defer file.Close()
-	if err != nil {
-		fmt.Printf("Failed to read file: %v\n", err)
-		os.Exit(1)
 	}
 
 	lines := 0
 	words := 0
 	bytes := 0
 	characters := 0
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 
 	split := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		moveForward, result, e := bufio.ScanLines(data, atEOF)
@@ -152,8 +197,8 @@ func main() {
 		// 	str = str[:len(str)-size]
 		// }
 		// 327900
-		file.Seek(0, io.SeekStart)
-		scanner = bufio.NewScanner(file)
+		resetedReader := resetFunction(reader)
+		scanner = bufio.NewScanner(resetedReader)
 		scanner.Split(bufio.ScanRunes)
 		for scanner.Scan() {
 			characters++

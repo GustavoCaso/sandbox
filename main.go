@@ -17,14 +17,64 @@ var characterFlag = flag.Bool("m", false, "The number of character in each input
 func main() {
 	flag.Parse()
 
-	argsLength := len(os.Args)
+	argsLength := flag.NArg()
 
-	if argsLength < 2 {
+	if argsLength != 1 {
 		fmt.Println("You must provide a file")
 		os.Exit(1)
 	}
 
-	fileName := os.Args[argsLength-1]
+	cliFlags := flag.NFlag()
+	var outputFormat func(filename string, values []int)
+
+	switch cliFlags {
+	case 0:
+		*bytesFlag = true
+		*wordsFlag = true
+		*linesFlag = true
+		outputFormat = func(filename string, values []int) {
+			if len(values) != 3 {
+				panic("wrong number of values")
+			}
+			fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+		}
+	case 1:
+		outputFormat = func(filename string, values []int) {
+			if len(values) != 1 {
+				panic("wrong number of values")
+			}
+			fmt.Printf("  %d %s\n", values[0], filename)
+		}
+	case 2:
+		outputFormat = func(filename string, values []int) {
+			if len(values) != 2 {
+				panic("wrong number of values")
+			}
+			fmt.Printf("   %d  %d %s\n", values[0], values[1], filename)
+		}
+	case 3:
+		outputFormat = func(filename string, values []int) {
+			if len(values) != 3 {
+				panic("wrong number of values")
+			}
+			fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+		}
+	case 4:
+		// Means that we've pass bytes and characters.
+		// Those two flags cancel each other, so we are going to turn off the character flag
+		*characterFlag = false
+
+		outputFormat = func(filename string, values []int) {
+			if len(values) != 3 {
+				panic("wrong number of values")
+			}
+			fmt.Printf("    %d   %d  %d %s\n", values[0], values[1], values[2], filename)
+		}
+	default:
+		panic("wrong number of flags")
+	}
+
+	fileName := flag.Arg(0)
 
 	file, err := os.Open(fileName)
 	defer file.Close()
@@ -110,25 +160,23 @@ func main() {
 		}
 	}
 
-	output := strings.Builder{}
+	values := []int{}
 
 	if *linesFlag {
-		fmt.Fprintf(&output, "  %d", lines)
+		values = append(values, lines)
 	}
 
 	if *wordsFlag {
-		fmt.Fprintf(&output, "  %d", words)
+		values = append(values, words)
 	}
 
 	if *characterFlag {
-		fmt.Fprintf(&output, "  %d", characters)
+		values = append(values, characters)
 	}
 
 	if *bytesFlag {
-		fmt.Fprintf(&output, "  %d", bytes)
+		values = append(values, bytes)
 	}
 
-	output.WriteString(fmt.Sprintf(" %s", fileName))
-
-	fmt.Println(output.String())
+	outputFormat(fileName, values)
 }

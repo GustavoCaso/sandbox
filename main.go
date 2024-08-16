@@ -14,27 +14,24 @@ type indentfier int
 
 const (
 	// Special tokens
-	ILLEGAL indentfier = iota
-	EOF
-	WS // whitespace
+	EOF indentfier = iota
 
 	LEFT_CURLY_BRACKET  // {
 	RIGHT_CURLY_BRACKET // }
 	LEFT_BRACKET        // [
 	RIGHT_BRACKET       // ]
-	DOUBLE_QUOTES       // "
-	LETTER              // [a-zA-Z]
-	COLON               // :
-	COMMA               // ,
-	NUMBER              // [0-9]
-	BOOLEAN             // (true|false)
-	NULL                // null
 
-	KEY_OR_VALUE // "(LETTER|NUMBER)"
+	DOUBLE_QUOTES // "
+	COLON         // :
+	COMMA         // ,
 
-	// Complex
-	ARRAY
-	OBJECT
+	// Values
+	NUMBER  // [0-9]
+	STRING  // "([a-zA-Z]|NUMBER|Escape characters)"
+	NULL    // null
+	BOOLEAN // (true|false)
+	ARRAY   // [NUMBER|STRING|NULL|BOOLEAN]
+	OBJECT  // {}
 )
 
 type token struct {
@@ -162,15 +159,12 @@ func (p *parser) Parse() []token {
 			}
 			tokens = append(tokens, token{i: RIGHT_CURLY_BRACKET, val: "}"})
 		case '"':
-			values, err := p.s.ReadUntilNext('"')
-
-			if err {
-				log.Fatal("failed to parse string")
+			values, err := p.parseString(t)
+			if err != nil {
+				log.Fatal(err)
 			}
 
-			values = append([]rune{t}, values...)
-
-			tokens = append(tokens, token{i: KEY_OR_VALUE, val: string(values)})
+			tokens = append(tokens, token{i: STRING, val: string(values)})
 		case ':':
 			tokens = append(tokens, token{i: COLON, val: ":"})
 		case ',':
@@ -256,7 +250,6 @@ func (p *parser) Parse() []token {
 					tokens = append(tokens, token{i: NULL, val: string(result)})
 					continue
 				}
-
 				log.Fatalf("invalid letter token: %s\n", string(t))
 			}
 
@@ -356,6 +349,67 @@ func (p *parser) parseNumber(initRune rune) ([]rune, error) {
 	}
 }
 
+const maxTotalHex = 4
+
+func (p *parser) parseString(initRune rune) ([]rune, error) {
+	value := []rune{initRune}
+	backspace := false
+	hex := false
+	totalHex := 0
+	for {
+		v := p.s.Read()
+
+		if backspace {
+			if isControlCharacter(v) {
+				value = append(value, v)
+
+				backspace = false
+				if v == 'u' {
+					hex = true
+				}
+
+				continue
+			}
+		}
+
+		if hex && isLetter(v) {
+			return []rune{}, errors.New("invalid string. expecting four hex numbers after \\u")
+		}
+
+		if hex && totalHex <= maxTotalHex && isDigit(v) {
+			totalHex += 1
+			value = append(value, v)
+
+			if totalHex == maxTotalHex {
+				hex = false
+				totalHex = 0
+			}
+			continue
+		}
+
+		if isLetter(v) {
+			value = append(value, v)
+			continue
+		}
+
+		if v == '\\' {
+			backspace = true
+			value = append(value, v)
+			continue
+		}
+
+		if v == '"' {
+			// Check for invald hex numbers
+			if hex && totalHex < maxTotalHex {
+				return []rune{}, errors.New("invalid string. expecting four hex numbers after \\u")
+			}
+			// We are done parsing the string
+			value = append(value, v)
+			return value, nil
+		}
+	}
+}
+
 func isWhitespace(ch rune) bool {
 	return ch == ' ' || ch == '\t' || ch == '\n'
 }
@@ -366,6 +420,10 @@ func isLetter(ch rune) bool {
 
 func isDigit(ch rune) bool {
 	return (ch >= '0' && ch <= '9')
+}
+
+func isControlCharacter(ch rune) bool {
+	return ch == '\\' || ch == '/' || ch == 'b' || ch == 'f' || ch == 'n' || ch == 'r' || ch == 't' || ch == '"' || ch == 'u'
 }
 
 func main() {
@@ -397,7 +455,9 @@ func main() {
 	tokens := parser.Parse()
 
 	fmt.Printf("%d tokens: %+v\n", len(tokens), tokens)
+
 	if !valid(tokens) {
+		fmt.Println("invalid!")
 		os.Exit(1)
 	}
 	fmt.Println("valid!")
@@ -418,15 +478,11 @@ func valid(tokens []token) bool {
 	idx := 0
 	for idx < len(tokensToValidate) {
 		t := tokensToValidate[idx]
-		if t.i == ILLEGAL {
-			log.Println("illegal token")
-			return false
-		}
 
-		if t.i == KEY_OR_VALUE {
+		if t.i == STRING {
 			if !current_key {
-				advance := consumeTokenUntil(tokensToValidate[idx+1:], COLON)
-				if advance == 0 {
+				advance, err := consumeTokenUntil(tokensToValidate[idx+1:], COLON)
+				if err != nil {
 					log.Println("missing colon after key")
 					return false
 				}
@@ -435,10 +491,12 @@ func valid(tokens []token) bool {
 				continue
 			}
 
-			advance := consumeTokenUntil(tokensToValidate[idx+1:], COMMA)
-			if advance == 0 {
-				if !(idx+1 == len(tokensToValidate)) {
-					log.Println("missing comma")
+			advance, err := consumeTokenUntil(tokensToValidate[idx+1:], COMMA)
+			if err != nil {
+				// We might not find a comma because we are the last key value
+				// if we are the last key value pair we want to continue
+				if idx+1 != len(tokensToValidate) {
+					log.Println("missing comma between keys")
 					return false
 				}
 				idx += 1
@@ -461,19 +519,23 @@ func valid(tokens []token) bool {
 				return false
 			}
 
-			advance := consumeTokenUntil(tokensToValidate[idx+1:], COMMA)
-			if advance == 0 {
-				if !(idx+1 == len(tokensToValidate)) {
-					log.Println("missing comma")
+			advance, err := consumeTokenUntil(tokensToValidate[idx+1:], COMMA)
+			if err != nil {
+				// We might not find a comma because we are the last key value
+				// if we are the last key value pair we want to continue
+				if idx+1 != len(tokensToValidate) {
+					log.Println("missing comma between keys")
 					return false
 				}
 				idx += 1
 				continue
 			}
+
 			if idx+advance+1 == len(tokensToValidate) {
 				log.Println("trailing comma")
 				return false
 			}
+
 			current_key = false
 			idx += advance + 1
 			continue
@@ -483,14 +545,21 @@ func valid(tokens []token) bool {
 	return true
 }
 
-func consumeTokenUntil(tokens []token, identifier indentfier) int {
+func consumeTokenUntil(tokens []token, identifier indentfier) (int, error) {
 	moves := 0
+	found := false
+
 	for _, t := range tokens {
 		moves += 1
 		if t.i == identifier {
+			found = true
 			break
 		}
 	}
 
-	return moves
+	if found {
+		return moves, nil
+	}
+
+	return moves, errors.New("unable to find next token")
 }

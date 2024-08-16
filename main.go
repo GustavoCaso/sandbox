@@ -15,7 +15,7 @@ const (
 	// Special tokens
 	ILLEGAL indentfier = iota
 	EOF
-	WS //
+	WS // whitespace
 
 	LEFT_BRACKET  // {
 	RIGHT_BRACKET // }
@@ -23,33 +23,24 @@ const (
 	LETTER        // [a-zA-Z]
 	COLON         // :
 	COMMA         // ,
+	NUMBER        // [0-9]
+	BOOLEAN       // (true|false)
+	NULL          // null
+
+	KEY_OR_VALUE // "(LETTER|NUMBER)"
+
+	// Complex
+	ARRAY
+	OBJECT
 )
 
 type token struct {
-	i indentfier
-	v rune
+	i   indentfier
+	val string
 }
 
 func (t token) String() string {
-	var v string
-	switch t.i {
-	case LEFT_BRACKET:
-		v = "{"
-	case RIGHT_BRACKET:
-		v = "}"
-	case LETTER:
-		v = string(t.v)
-	case DOUBLE_QUOTES:
-		v = "\""
-	case COMMA:
-		v = ","
-	case COLON:
-		v = ":"
-	case WS:
-		v = "**"
-	}
-
-	return v
+	return t.val
 }
 
 type scanner struct {
@@ -75,12 +66,51 @@ func (s *scanner) Read() rune {
 
 func (s *scanner) Unread() { _ = s.r.UnreadRune() }
 
+func (s *scanner) ReadUntilNext(i rune) ([]rune, bool) {
+	result := []rune{}
+
+	for {
+		ch := s.Read()
+
+		if ch == eof {
+			return result, true
+		}
+
+		result = append(result, ch)
+		if ch == i {
+			break
+		}
+	}
+
+	return result, false
+}
+
+func (s *scanner) ReadNext(next int) ([]rune, bool) {
+	result := []rune{}
+
+	for i := 0; i < next; i++ {
+		ch := s.Read()
+
+		if ch == eof {
+			return result, true
+		}
+
+		result = append(result, ch)
+	}
+
+	return result, false
+}
+
 func isWhitespace(ch rune) bool {
 	return ch == ' ' || ch == '\t' || ch == '\n'
 }
 
 func isLetter(ch rune) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+}
+
+func isDigit(ch rune) bool {
+	return (ch >= '0' && ch <= '9')
 }
 
 func main() {
@@ -116,19 +146,82 @@ func main() {
 
 		switch t {
 		case '{':
-			tokens = append(tokens, token{i: LEFT_BRACKET})
+			tokens = append(tokens, token{i: LEFT_BRACKET, val: "{"})
 		case '}':
-			tokens = append(tokens, token{i: RIGHT_BRACKET})
+			tokens = append(tokens, token{i: RIGHT_BRACKET, val: "}"})
 		case '"':
-			tokens = append(tokens, token{i: DOUBLE_QUOTES})
+			values, err := scanner.ReadUntilNext('"')
+
+			if err {
+				log.Fatal("failed to parse string")
+			}
+
+			values = append([]rune{t}, values...)
+
+			tokens = append(tokens, token{i: KEY_OR_VALUE, val: string(values)})
 		case ':':
-			tokens = append(tokens, token{i: COLON})
+			tokens = append(tokens, token{i: COLON, val: ":"})
 		case ',':
-			tokens = append(tokens, token{i: COMMA})
+			tokens = append(tokens, token{i: COMMA, val: ","})
 		default:
-			if isLetter(t) {
-				tokens = append(tokens, token{i: LETTER, v: t})
+			if isDigit(t) {
+				value := []rune{t}
+				for {
+					v := scanner.Read()
+					if isDigit(v) {
+						value = append(value, v)
+					} else {
+						// We no longer are a digit
+						scanner.Unread()
+						break
+					}
+				}
+				tokens = append(tokens, token{i: NUMBER, val: string(value)})
 				continue
+			}
+
+			if isLetter(t) {
+				if t == 't' {
+					values, err := scanner.ReadNext(3)
+					if err {
+						log.Fatal("failed to parse true value")
+					}
+					result := append([]rune{t}, values...)
+
+					if string(result) != "true" {
+						log.Fatal("invalid true token")
+					}
+					tokens = append(tokens, token{i: BOOLEAN, val: string(result)})
+					continue
+				}
+
+				if t == 'f' {
+					values, err := scanner.ReadNext(4)
+					if err {
+						log.Fatal("failed to parse false value")
+					}
+					result := append([]rune{t}, values...)
+					if string(result) != "false" {
+						log.Fatal("invalid false token")
+					}
+					tokens = append(tokens, token{i: BOOLEAN, val: string(result)})
+					continue
+				}
+
+				if t == 'n' {
+					values, err := scanner.ReadNext(3)
+					if err {
+						log.Fatal("failed to parse null value")
+					}
+					result := append([]rune{t}, values...)
+					if string(result) != "null" {
+						log.Fatal("invalid null token")
+					}
+					tokens = append(tokens, token{i: NULL, val: string(result)})
+					continue
+				}
+
+				log.Fatalf("invalid letter token: %s\n", string(t))
 			}
 
 			if isWhitespace(t) {
@@ -136,7 +229,7 @@ func main() {
 				continue
 			}
 
-			tokens = append(tokens, token{i: ILLEGAL})
+			tokens = append(tokens, token{i: ILLEGAL, val: "**"})
 		}
 
 	}
@@ -145,7 +238,7 @@ func main() {
 	if !valid(tokens) {
 		os.Exit(1)
 	}
-
+	fmt.Println("valid!")
 	os.Exit(0)
 }
 
@@ -174,10 +267,6 @@ func valid(tokens []token) bool {
 		return false
 	}
 	current_key := false
-	current_key_tokens := []token{}
-	current_value := false
-	current_value_tokens := []token{}
-	pairs := map[any]any{}
 	tokensToValidate := tokens[1 : len(tokens)-1]
 
 	idx := 0
@@ -188,89 +277,74 @@ func valid(tokens []token) bool {
 			return false
 		}
 
-		if current_key && current_value {
-			// We have a key value pair the next character must by a comma
-			// Invallid JSON
-			if t.i != COMMA {
-				log.Println("missing comma")
-				return false
+		if t.i == KEY_OR_VALUE {
+			if !current_key {
+				advance := consumeTokenUntil(tokensToValidate[idx+1:], COLON)
+				if advance == 0 {
+					log.Println("missing colon after key")
+					return false
+				}
+				current_key = true
+				idx += advance + 1
+				continue
 			}
 
-			if idx+1 == len(tokensToValidate) {
-				log.Println("invalid trailing comma")
+			advance := consumeTokenUntil(tokensToValidate[idx+1:], COMMA)
+			if advance == 0 {
+				if !(idx+1 == len(tokensToValidate)) {
+					log.Println("missing comma")
+					return false
+				}
+				idx += 1
+				continue
+			}
+
+			if idx+advance+1 == len(tokensToValidate) {
+				log.Println("trailing comma")
 				return false
 			}
 
 			current_key = false
-			current_value = false
-			idx += 1
+			idx += advance + 1
 			continue
 		}
 
-		if t.i == DOUBLE_QUOTES {
-			val := []token{t}
-			val, advance := consumeTokenUntil(tokensToValidate[idx+1:], val, DOUBLE_QUOTES)
-			if advance == 0 {
-				log.Println("consumeTokenUntil invalid")
-				return false
-			}
-
-			if !validString(val) {
-				log.Println("invalid string")
-				return false
-			}
-
-			idx += advance + 1
-
-			if !current_key && !current_value {
-				current_key = true
-				current_key_tokens = val
-				continue
-			}
-
-			if current_key && !current_value {
-				current_value = true
-				current_value_tokens = val
-				stringVal := ""
-				for _, t := range current_key_tokens {
-					stringVal += t.String()
-				}
-				pairs[stringVal] = current_value_tokens
-				continue
-			}
-		}
-
-		if t.i == COLON {
-			// Colon is used to split key value pairs
+		if t.i == BOOLEAN || t.i == NULL || t.i == NUMBER {
 			if !current_key {
-				log.Println("invalid colon")
+				log.Println("invalid value without a key")
 				return false
 			}
 
-			idx += 1
-		}
-
-		if t.i == LETTER {
-			log.Println("invalid key or value")
-			return false
+			advance := consumeTokenUntil(tokensToValidate[idx+1:], COMMA)
+			if advance == 0 {
+				if !(idx+1 == len(tokensToValidate)) {
+					log.Println("missing comma")
+					return false
+				}
+				idx += 1
+				continue
+			}
+			if idx+advance+1 == len(tokensToValidate) {
+				log.Println("trailing comma")
+				return false
+			}
+			current_key = false
+			idx += advance + 1
+			continue
 		}
 	}
 
-	fmt.Println(pairs)
 	return true
 }
 
-func consumeTokenUntil(tokens []token, result []token, identifier indentfier) ([]token, int) {
+func consumeTokenUntil(tokens []token, identifier indentfier) int {
 	moves := 0
 	for _, t := range tokens {
 		moves += 1
 		if t.i == identifier {
-			result = append(result, t)
 			break
 		}
-
-		result = append(result, t)
 	}
 
-	return result, moves
+	return moves
 }

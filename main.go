@@ -206,18 +206,12 @@ func (p *parser) Parse() []token {
 
 			tokens = append(tokens, token{i: ARRAY, val: sbuf.String()})
 		default:
-			if isDigit(t) {
-				value := []rune{t}
-				for {
-					v := p.s.Read()
-					if isDigit(v) {
-						value = append(value, v)
-					} else {
-						// We no longer are a digit
-						p.s.Unread()
-						break
-					}
+			if t == '-' || isDigit(t) {
+				value, err := p.parseNumber(t)
+				if err != nil {
+					log.Fatal(err)
 				}
+
 				tokens = append(tokens, token{i: NUMBER, val: string(value)})
 				continue
 			}
@@ -276,6 +270,90 @@ func (p *parser) Parse() []token {
 	}
 
 	return tokens
+}
+
+func (p *parser) parseNumber(initRune rune) ([]rune, error) {
+	mustIncludeFractionAtStart := false
+	fractionIncluded := false
+	negativeNumber := false
+	exponentIncluded := false
+	exponentSignIncluded := false
+	start := true
+
+	if initRune == '0' {
+		mustIncludeFractionAtStart = true
+	}
+
+	if initRune == '-' {
+		negativeNumber = true
+	}
+
+	value := []rune{initRune}
+	for {
+		v := p.s.Read()
+		// multiple fraction
+		if v == '.' && fractionIncluded {
+			return []rune{}, errors.New("invalid number. multiple fractions")
+		}
+
+		// negative number with just fraction
+		if v == '.' && negativeNumber && start {
+			return []rune{}, errors.New("invalid negative number")
+		}
+
+		// leading zero without fraction
+		if mustIncludeFractionAtStart && v != '.' && start {
+			return []rune{}, errors.New("number start with zero, must be followed by fraction")
+		}
+
+		// leaduing fraction
+		if !mustIncludeFractionAtStart && v == '.' && start {
+			return []rune{}, errors.New("invalid fraction numbre")
+		}
+
+		if mustIncludeFractionAtStart && v == '.' && !start {
+			start = false
+			fractionIncluded = true
+			value = append(value, v)
+			continue
+		}
+
+		if isDigit(v) || v == '.' {
+			start = false
+			if v == '.' {
+				fractionIncluded = true
+			}
+			value = append(value, v)
+			continue
+		}
+
+		if v == 'E' || v == 'e' {
+			if exponentIncluded {
+				return []rune{}, errors.New("invalid number. multiple exponents")
+			}
+
+			exponentIncluded = true
+			value = append(value, v)
+			continue
+		}
+
+		if v == '+' || v == '-' {
+			if exponentIncluded {
+				if exponentSignIncluded {
+					return []rune{}, errors.New("invalid number. multiple exponents signs")
+				}
+
+				exponentSignIncluded = true
+				value = append(value, v)
+				continue
+			}
+			return []rune{}, errors.New("invalid number. invalid sign")
+		}
+
+		// We no longer are a digit
+		p.s.Unread()
+		return value, nil
+	}
 }
 
 func isWhitespace(ch rune) bool {

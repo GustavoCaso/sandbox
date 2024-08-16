@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -17,15 +18,17 @@ const (
 	EOF
 	WS // whitespace
 
-	LEFT_BRACKET  // {
-	RIGHT_BRACKET // }
-	DOUBLE_QUOTES // "
-	LETTER        // [a-zA-Z]
-	COLON         // :
-	COMMA         // ,
-	NUMBER        // [0-9]
-	BOOLEAN       // (true|false)
-	NULL          // null
+	LEFT_CURLY_BRACKET  // {
+	RIGHT_CURLY_BRACKET // }
+	LEFT_BRACKET        // [
+	RIGHT_BRACKET       // ]
+	DOUBLE_QUOTES       // "
+	LETTER              // [a-zA-Z]
+	COLON               // :
+	COMMA               // ,
+	NUMBER              // [0-9]
+	BOOLEAN             // (true|false)
+	NULL                // null
 
 	KEY_OR_VALUE // "(LETTER|NUMBER)"
 
@@ -101,6 +104,180 @@ func (s *scanner) ReadNext(next int) ([]rune, bool) {
 	return result, false
 }
 
+type parser struct {
+	s                 *scanner
+	firstCurlyBracket bool
+}
+
+func (p *parser) Parse() []token {
+	tokens := []token{}
+
+	for {
+		t := p.s.Read()
+
+		if t == eof {
+			break
+		}
+
+		switch t {
+		case '{':
+			if !p.firstCurlyBracket {
+				tokens = append(tokens, token{i: LEFT_CURLY_BRACKET, val: "{"})
+				p.firstCurlyBracket = true
+				continue
+			}
+
+			values, err := p.s.ReadUntilNext('}')
+
+			if err {
+				log.Fatal("failed to parse object")
+			}
+
+			values = values[:len(values)-1]
+
+			buf := bytes.Buffer{}
+			for _, val := range values {
+				buf.WriteRune(val)
+			}
+
+			objectScanner := newScanner(bytes.NewReader(buf.Bytes()))
+			objectParser := &parser{
+				s:                 objectScanner,
+				firstCurlyBracket: true,
+			}
+
+			objectTokens := objectParser.Parse()
+
+			sbuf := bytes.Buffer{}
+			sbuf.WriteString("{")
+			for _, val := range objectTokens {
+				sbuf.WriteString(val.String())
+			}
+			sbuf.WriteString("}")
+
+			tokens = append(tokens, token{i: OBJECT, val: sbuf.String()})
+		case '}':
+			if !p.firstCurlyBracket {
+				log.Fatal("incorrect parser state")
+			}
+			tokens = append(tokens, token{i: RIGHT_CURLY_BRACKET, val: "}"})
+		case '"':
+			values, err := p.s.ReadUntilNext('"')
+
+			if err {
+				log.Fatal("failed to parse string")
+			}
+
+			values = append([]rune{t}, values...)
+
+			tokens = append(tokens, token{i: KEY_OR_VALUE, val: string(values)})
+		case ':':
+			tokens = append(tokens, token{i: COLON, val: ":"})
+		case ',':
+			tokens = append(tokens, token{i: COMMA, val: ","})
+		case '[':
+			values, err := p.s.ReadUntilNext(']')
+
+			if err {
+				log.Fatal("failed to parse array")
+			}
+
+			values = values[:len(values)-1]
+
+			buf := bytes.Buffer{}
+			for _, val := range values {
+				buf.WriteRune(val)
+			}
+
+			arrayScanner := newScanner(bytes.NewReader(buf.Bytes()))
+			arrayParser := &parser{
+				s:                 arrayScanner,
+				firstCurlyBracket: true,
+			}
+
+			arrayTokens := arrayParser.Parse()
+
+			sbuf := bytes.Buffer{}
+			sbuf.WriteString("[")
+			for _, val := range arrayTokens {
+				sbuf.WriteString(val.String())
+			}
+			sbuf.WriteString("]")
+
+			tokens = append(tokens, token{i: ARRAY, val: sbuf.String()})
+		default:
+			if isDigit(t) {
+				value := []rune{t}
+				for {
+					v := p.s.Read()
+					if isDigit(v) {
+						value = append(value, v)
+					} else {
+						// We no longer are a digit
+						p.s.Unread()
+						break
+					}
+				}
+				tokens = append(tokens, token{i: NUMBER, val: string(value)})
+				continue
+			}
+
+			if isLetter(t) {
+				if t == 't' {
+					values, err := p.s.ReadNext(3)
+					if err {
+						log.Fatal("failed to parse true value")
+					}
+					result := append([]rune{t}, values...)
+
+					if string(result) != "true" {
+						log.Fatal("invalid true token")
+					}
+					tokens = append(tokens, token{i: BOOLEAN, val: string(result)})
+					continue
+				}
+
+				if t == 'f' {
+					values, err := p.s.ReadNext(4)
+					if err {
+						log.Fatal("failed to parse false value")
+					}
+					result := append([]rune{t}, values...)
+					if string(result) != "false" {
+						log.Fatal("invalid false token")
+					}
+					tokens = append(tokens, token{i: BOOLEAN, val: string(result)})
+					continue
+				}
+
+				if t == 'n' {
+					values, err := p.s.ReadNext(3)
+					if err {
+						log.Fatal("failed to parse null value")
+					}
+					result := append([]rune{t}, values...)
+					if string(result) != "null" {
+						log.Fatal("invalid null token")
+					}
+					tokens = append(tokens, token{i: NULL, val: string(result)})
+					continue
+				}
+
+				log.Fatalf("invalid letter token: %s\n", string(t))
+			}
+
+			if isWhitespace(t) {
+				// We do not care about white space
+				continue
+			}
+
+			log.Fatalf("invalid character: %s\n", string(t))
+		}
+	}
+
+	return tokens
+}
+
 func isWhitespace(ch rune) bool {
 	return ch == ' ' || ch == '\t' || ch == '\n'
 }
@@ -134,105 +311,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tokens := []token{}
 	scanner := newScanner(reader)
-
-	for {
-		t := scanner.Read()
-
-		if t == eof {
-			break
-		}
-
-		switch t {
-		case '{':
-			tokens = append(tokens, token{i: LEFT_BRACKET, val: "{"})
-		case '}':
-			tokens = append(tokens, token{i: RIGHT_BRACKET, val: "}"})
-		case '"':
-			values, err := scanner.ReadUntilNext('"')
-
-			if err {
-				log.Fatal("failed to parse string")
-			}
-
-			values = append([]rune{t}, values...)
-
-			tokens = append(tokens, token{i: KEY_OR_VALUE, val: string(values)})
-		case ':':
-			tokens = append(tokens, token{i: COLON, val: ":"})
-		case ',':
-			tokens = append(tokens, token{i: COMMA, val: ","})
-		default:
-			if isDigit(t) {
-				value := []rune{t}
-				for {
-					v := scanner.Read()
-					if isDigit(v) {
-						value = append(value, v)
-					} else {
-						// We no longer are a digit
-						scanner.Unread()
-						break
-					}
-				}
-				tokens = append(tokens, token{i: NUMBER, val: string(value)})
-				continue
-			}
-
-			if isLetter(t) {
-				if t == 't' {
-					values, err := scanner.ReadNext(3)
-					if err {
-						log.Fatal("failed to parse true value")
-					}
-					result := append([]rune{t}, values...)
-
-					if string(result) != "true" {
-						log.Fatal("invalid true token")
-					}
-					tokens = append(tokens, token{i: BOOLEAN, val: string(result)})
-					continue
-				}
-
-				if t == 'f' {
-					values, err := scanner.ReadNext(4)
-					if err {
-						log.Fatal("failed to parse false value")
-					}
-					result := append([]rune{t}, values...)
-					if string(result) != "false" {
-						log.Fatal("invalid false token")
-					}
-					tokens = append(tokens, token{i: BOOLEAN, val: string(result)})
-					continue
-				}
-
-				if t == 'n' {
-					values, err := scanner.ReadNext(3)
-					if err {
-						log.Fatal("failed to parse null value")
-					}
-					result := append([]rune{t}, values...)
-					if string(result) != "null" {
-						log.Fatal("invalid null token")
-					}
-					tokens = append(tokens, token{i: NULL, val: string(result)})
-					continue
-				}
-
-				log.Fatalf("invalid letter token: %s\n", string(t))
-			}
-
-			if isWhitespace(t) {
-				// We do not care about white space
-				continue
-			}
-
-			tokens = append(tokens, token{i: ILLEGAL, val: "**"})
-		}
-
+	parser := &parser{
+		s: scanner,
 	}
+
+	tokens := parser.Parse()
 
 	fmt.Printf("%d tokens: %+v\n", len(tokens), tokens)
 	if !valid(tokens) {
@@ -242,27 +326,11 @@ func main() {
 	os.Exit(0)
 }
 
-func validString(tokens []token) bool {
-	if !(tokens[0].i == DOUBLE_QUOTES && tokens[len(tokens)-1].i == DOUBLE_QUOTES) {
-		log.Println("missing double quotes for string")
-		return false
-	}
-
-	for _, token := range tokens[1 : len(tokens)-1] {
-		if token.i != LETTER {
-			log.Println("not valid string contents")
-			return false
-		}
-	}
-
-	return true
-}
-
 func valid(tokens []token) bool {
 	if len(tokens) < 2 {
 		return false
 	}
-	if !(tokens[0].i == LEFT_BRACKET && tokens[len(tokens)-1].i == RIGHT_BRACKET) {
+	if !(tokens[0].i == LEFT_CURLY_BRACKET && tokens[len(tokens)-1].i == RIGHT_CURLY_BRACKET) {
 		log.Println("missing open or close brackets")
 		return false
 	}
@@ -309,7 +377,7 @@ func valid(tokens []token) bool {
 			continue
 		}
 
-		if t.i == BOOLEAN || t.i == NULL || t.i == NUMBER {
+		if t.i == BOOLEAN || t.i == NULL || t.i == NUMBER || t.i == ARRAY || t.i == OBJECT {
 			if !current_key {
 				log.Println("invalid value without a key")
 				return false

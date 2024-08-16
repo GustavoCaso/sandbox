@@ -1,6 +1,14 @@
 {
   "key": "value",
   "key-n": 101,
-  "key-o": {},
-  "key-l": []
+  "key-o": {
+    "foo": "bar"
+  },
+  "key-l": [
+    1,
+    {
+      "sub-key": "sub-value"
+    }
+  ],
+  "complex": 123.78
 }

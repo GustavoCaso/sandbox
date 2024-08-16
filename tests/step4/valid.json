@@ -1,14 +1,23 @@
 {
   "key": "value",
   "key-n": 101,
+  "key-m": -101,
   "key-o": {
     "foo": "bar"
   },
+  "complex-string": "hello\"world\n",
   "key-l": [
     1,
     {
       "sub-key": "sub-value"
     }
   ],
-  "complex": 123.78
+  "complex": -234e+467868,
+  "complex2": 0.9,
+  "complex3": -100.90,
+  "complex4": 123e567,
+  "complex5": 1234E789,
+  "complex6": 1234E+789,
+  "complex7": 1234E-789,
+  "complex8": -0.9
 }

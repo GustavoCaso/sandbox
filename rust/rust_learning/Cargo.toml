@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["cli_tool", "http_server"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4.4", features = ["derive"] }

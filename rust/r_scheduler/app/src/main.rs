@@ -2,7 +2,7 @@ use scheduler::Scheduler;
 use scheduler::Task;
 
 fn main() {
-    let s = Scheduler::new();
+    let s: Scheduler = Scheduler::new();
     let task = Task::new(
         "Task 1".to_string(),
         Box::new(|| {

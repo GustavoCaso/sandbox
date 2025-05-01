@@ -1,5 +1,6 @@
 use scheduler::Scheduler;
 use scheduler::Task;
+use std::{thread, time};
 
 fn main() {
     let s: Scheduler = Scheduler::new();
@@ -10,5 +11,6 @@ fn main() {
         }),
     );
 
-    s.schedule(task);
+    let _ = s.schedule(task);
+    thread::sleep(time::Duration::from_secs(2));
 }

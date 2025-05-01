@@ -1,8 +1,9 @@
-use core::panic::PanicMessage;
 use rand::Rng;
-use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub struct Task {
     id: u32,
@@ -18,8 +19,9 @@ impl Task {
 }
 
 pub struct Scheduler {
-    receiver: Receiver<Task>,
+    receiver: Arc<Mutex<Receiver<Task>>>,
     sender: Sender<Task>,
+    running: AtomicBool,
 }
 
 pub struct ScheduleError {
@@ -45,11 +47,32 @@ impl Scheduler {
         let (tx, rx) = channel::<Task>();
         Scheduler {
             sender: tx,
-            receiver: rx,
+            receiver: Arc::new(Mutex::new(rx)),
+            running: AtomicBool::new(false),
         }
     }
 
     pub fn schedule(&self, task: Task) -> Result<(), ScheduleError> {
+        if !self.running.load(Ordering::Relaxed) {
+            let receiver_clone = Arc::clone(&self.receiver);
+            thread::spawn(move || {
+                loop {
+                    let receiver = receiver_clone.lock().unwrap();
+                    match receiver.recv() {
+                        Ok(task) => {
+                            drop(receiver); // Drop the lock to avoid deadlock
+                            (task.call)();
+                        }
+                        Err(e) => {
+                            println!("Receiver closed: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+            self.running.store(true, Ordering::Relaxed);
+        }
+
         // Scheduling logic goes here
         println!("Scheduling task: {}", task.name);
         // Send the task to the receiver

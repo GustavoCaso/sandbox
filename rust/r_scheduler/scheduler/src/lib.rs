@@ -1,3 +1,4 @@
+use num_cpus;
 use rand::Rng;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
@@ -22,6 +23,7 @@ pub struct Scheduler {
     receiver: Arc<Mutex<Receiver<Task>>>,
     sender: Sender<Task>,
     running: AtomicBool,
+    worker_count: usize,
 }
 
 pub struct ScheduleError {
@@ -49,27 +51,33 @@ impl Scheduler {
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             running: AtomicBool::new(false),
+            worker_count: num_cpus::get(),
         }
     }
 
     pub fn schedule(&self, task: Task) -> Result<(), ScheduleError> {
         if !self.running.load(Ordering::Relaxed) {
-            let receiver_clone = Arc::clone(&self.receiver);
-            thread::spawn(move || {
-                loop {
-                    let receiver = receiver_clone.lock().unwrap();
-                    match receiver.recv() {
-                        Ok(task) => {
-                            drop(receiver); // Drop the lock to avoid deadlock
-                            (task.call)();
-                        }
-                        Err(e) => {
-                            println!("Receiver closed: {}", e);
-                            break;
+            // Start the worker threads
+            println!("Starting worker threads with {} workers", self.worker_count);
+            for i in 0..self.worker_count {
+                let receiver_clone = Arc::clone(&self.receiver);
+                thread::spawn(move || {
+                    loop {
+                        let receiver = receiver_clone.lock().unwrap();
+                        match receiver.recv() {
+                            Ok(task) => {
+                                drop(receiver); // Drop the lock to avoid deadlock
+                                println!("Worker {} executing task: {}", i, task.name);
+                                (task.call)();
+                            }
+                            Err(e) => {
+                                println!("Receiver closed: {}", e);
+                                break;
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
             self.running.store(true, Ordering::Relaxed);
         }
 

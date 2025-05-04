@@ -3,7 +3,7 @@ use num_cpus;
 use rand::Rng;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -41,7 +41,7 @@ impl Task {
 pub struct Scheduler {
     receiver: Arc<Mutex<Receiver<Task>>>,
     sender: Sender<Task>,
-    running: AtomicBool,
+    running: Arc<AtomicBool>,
     recurring_tasks: Arc<Mutex<Vec<(Instant, Task)>>>,
     worker_count: usize,
     worker_threads: Vec<thread::JoinHandle<()>>,
@@ -89,7 +89,7 @@ impl Scheduler {
         Scheduler {
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
-            running: AtomicBool::new(false),
+            running: Arc::new(AtomicBool::new(false)),
             worker_count: num_cpus::get(),
             worker_threads: Vec::new(),
             recurring_tasks: Arc::new(Mutex::new(Vec::new())),
@@ -148,7 +148,7 @@ impl Scheduler {
             let worker_thread = thread::spawn(move || {
                 loop {
                     let receiver = receiver_clone.lock().unwrap();
-                    match receiver.recv() {
+                    match receiver.recv_timeout(Duration::from_secs(1)) {
                         Ok(task) => {
                             drop(receiver); // Drop the lock to avoid deadlock
                             if task.interval.is_some() {
@@ -158,8 +158,13 @@ impl Scheduler {
                             }
                             (task.call)();
                         }
-                        Err(e) => {
-                            println!("Receiver closed: {}", e);
+                        Err(RecvTimeoutError::Timeout) => {
+                            drop(receiver);
+                            // Just a timeout, check running status and continue
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => {
+                            println!("Sender closed");
                             break;
                         }
                     }
@@ -180,8 +185,13 @@ impl Scheduler {
         let last_interval_check = Arc::clone(&self.last_interval_check);
         let sender = self.sender.clone();
         let started = self.started.clone();
+        let running = Arc::clone(&self.running);
         let recurring_worker_thread = thread::spawn(move || {
             loop {
+                if !running.load(Ordering::Relaxed) {
+                    println!("Recurring worker thread stopping");
+                    return;
+                }
                 let to_enqueue_taks = {
                     let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
 
@@ -228,6 +238,9 @@ impl Scheduler {
 
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
+
+        let _ = std::mem::replace(&mut self.sender, channel::<Task>().0);
+
         let threads = std::mem::take(&mut self.worker_threads);
 
         for thread in threads {

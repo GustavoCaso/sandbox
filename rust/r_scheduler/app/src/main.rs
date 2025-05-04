@@ -1,6 +1,7 @@
 use scheduler::Scheduler;
 use scheduler::Task;
-use std::sync::{Arc, Mutex};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::{thread, time};
 
 fn main() {
@@ -25,5 +26,5 @@ fn main() {
         let _ = scheduler.schedule(recurring_task);
     }
 
-    thread::sleep(time::Duration::from_secs(300));
+    thread::sleep(time::Duration::from_secs(200));
 }

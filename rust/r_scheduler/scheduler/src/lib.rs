@@ -1,7 +1,10 @@
 use chrono::{DateTime, Local};
 use num_cpus;
 use rand::Rng;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::channel;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -38,11 +41,49 @@ impl Task {
     }
 }
 
+impl PartialEq for Task {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.name == other.name && self.interval == other.interval
+    }
+}
+impl Eq for Task {}
+
+impl Ord for Task {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.interval.unwrap().cmp(&self.interval.unwrap())
+    }
+}
+
+impl PartialOrd for Task {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for Task {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Task {{ id: {}, name: {}, interval: {:?} }}",
+            self.id, self.name, self.interval
+        )
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Eq)]
+struct ScheduledTask(Instant, Task);
+
+impl Ord for ScheduledTask {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.0.cmp(&self.0)
+    }
+}
+
 pub struct Scheduler {
     receiver: Arc<Mutex<Receiver<Task>>>,
     sender: Sender<Task>,
     running: Arc<AtomicBool>,
-    recurring_tasks: Arc<Mutex<Vec<(Instant, Task)>>>,
+    recurring_tasks: Arc<Mutex<BinaryHeap<ScheduledTask>>>,
     worker_count: usize,
     worker_threads: Vec<thread::JoinHandle<()>>,
     started: Instant,
@@ -86,26 +127,27 @@ fn format_instant(instant: &Instant, start: &Instant) -> String {
 impl Scheduler {
     pub fn new() -> Self {
         let (tx, rx) = channel::<Task>();
+
         Scheduler {
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             running: Arc::new(AtomicBool::new(false)),
             worker_count: num_cpus::get(),
             worker_threads: Vec::new(),
-            recurring_tasks: Arc::new(Mutex::new(Vec::new())),
+            recurring_tasks: Arc::new(Mutex::new(BinaryHeap::<ScheduledTask>::new())),
             started: Instant::now(),
             last_interval_check: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
     pub fn schedule(&mut self, task: Task) -> Result<(), ScheduleError> {
-        if !self.running.load(Ordering::Relaxed) {
+        if !self.running.load(AtomicOrdering::Relaxed) {
             // Start the worker threads
             println!("Starting worker threads with {} workers", self.worker_count);
             self.start_worker_threads();
             self.start_recurring_worker_threads();
 
-            self.running.store(true, Ordering::Relaxed);
+            self.running.store(true, AtomicOrdering::Relaxed);
             self.started = Instant::now();
         }
 
@@ -123,7 +165,7 @@ impl Scheduler {
                 task.name,
                 format_instant(&next_run, &self.started)
             );
-            recurring_tasks.push((next_run, task));
+            recurring_tasks.push(ScheduledTask(next_run, task));
             Ok(())
         } else {
             // If the task is not recurring, send it to the worker threads
@@ -188,39 +230,82 @@ impl Scheduler {
         let running = Arc::clone(&self.running);
         let recurring_worker_thread = thread::spawn(move || {
             loop {
-                if !running.load(Ordering::Relaxed) {
+                if !running.load(AtomicOrdering::Relaxed) {
                     println!("Recurring worker thread stopping");
                     return;
                 }
-                let to_enqueue_taks = {
-                    let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
+                let now = Instant::now();
 
-                    let (to_enqueue, to_keep): (Vec<_>, Vec<_>) = recurring_tasks_guard
-                        .drain(..)
-                        .partition(|(time, _)| *time <= Instant::now());
-
-                    recurring_tasks_guard.extend(to_keep);
-
-                    to_enqueue
+                let sleep_duration = {
+                    let recurring_tasks_guard = recurring_tasks.lock().unwrap();
+                    if let Some(next_task) = recurring_tasks_guard.peek() {
+                        if next_task.0 <= now {
+                            // Task is already due, process immediately
+                            Duration::from_millis(0)
+                        } else {
+                            // Calculate exact time until next task
+                            let wait_time = next_task.0.duration_since(now);
+                            // Use a minimum sleep to avoid busy waiting
+                            std::cmp::max(wait_time, Duration::from_millis(10))
+                        }
+                    } else {
+                        // No tasks in queue, check again in 100ms
+                        Duration::from_millis(100)
+                    }
                 };
 
-                for (_, task) in to_enqueue_taks {
-                    let now = Instant::now();
-                    let next_run = now + Duration::from_secs(task.interval.unwrap());
-                    println!(
-                        "Recurring task re-scheduled {} to run at {:?}",
-                        task.name,
-                        format_instant(&next_run, &started)
-                    );
-                    {
-                        let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
-                        recurring_tasks_guard.push((next_run, task.clone()));
-                    }
-                    match sender.send(task) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            println!("Failed to send task: {}", e);
+                // Sleep only until the next task is due (or for a short time if no tasks)
+                if sleep_duration.as_millis() > 0 {
+                    thread::sleep(sleep_duration);
+                }
+
+                // Process all tasks that are due now
+                let now = Instant::now(); // Update time after sleeping
+                let mut tasks_to_reschedule = Vec::new();
+
+                {
+                    let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
+
+                    while let Some(event) = recurring_tasks_guard.peek() {
+                        if event.0 > now {
+                            break;
                         }
+                        // Remove the task from the heap
+                        let event = recurring_tasks_guard.pop().unwrap();
+                        tasks_to_reschedule.push(event);
+                    }
+                }
+
+                // Send the tasks to the worker threads
+                for event in &tasks_to_reschedule {
+                    // Enqueue the task to the sender
+                    println!(
+                        "Recurring task {} due at {:?}, executing at {:?}",
+                        event.1.name,
+                        format_instant(&event.0, &started),
+                        format_instant(&now, &started)
+                    );
+
+                    if let Err(e) = sender.send(event.1.clone()) {
+                        println!("Failed to send task: {}", e);
+                    }
+                }
+
+                let rescheduled_tasks: Vec<_> = tasks_to_reschedule
+                    .iter()
+                    .map(|event| {
+                        let interval = event.1.interval.unwrap();
+                        // Schedule from the original due time, not from now
+                        // This prevents drift when tasks are delayed
+                        let next_run = event.0 + Duration::from_secs(interval);
+                        ScheduledTask(next_run, event.1.clone())
+                    })
+                    .collect();
+
+                if !rescheduled_tasks.is_empty() {
+                    let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
+                    for event in rescheduled_tasks {
+                        recurring_tasks_guard.push(event);
                     }
                 }
 
@@ -229,7 +314,10 @@ impl Scheduler {
                     let mut t = last_interval_check.lock().unwrap();
                     *t = Instant::now();
                 }
-                thread::sleep(Duration::from_secs(1)); // Sleep for a second before checking again
+                println!(
+                    "Recurring worker thread checking tasks at {:?}",
+                    format_instant(&now, &started)
+                );
             }
         });
 
@@ -237,7 +325,7 @@ impl Scheduler {
     }
 
     pub fn stop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
+        self.running.store(false, AtomicOrdering::Relaxed);
 
         let _ = std::mem::replace(&mut self.sender, channel::<Task>().0);
 

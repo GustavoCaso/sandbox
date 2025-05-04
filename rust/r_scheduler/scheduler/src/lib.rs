@@ -12,12 +12,12 @@ use std::time::{Duration, Instant, SystemTime};
 pub struct Task {
     id: u32,
     name: String,
-    call: Arc<Box<dyn Fn() -> () + Send + Sync>>,
+    call: Arc<Box<dyn Fn() + Send + Sync>>,
     interval: Option<u64>,
 }
 
 impl Task {
-    pub fn new(name: String, call: Box<dyn Fn() -> () + Send + Sync>) -> Self {
+    pub fn new(name: String, call: Box<dyn Fn() + Send + Sync>) -> Self {
         let id = rand::rng().random::<u32>();
         Task {
             id,
@@ -27,7 +27,7 @@ impl Task {
         }
     }
 
-    pub fn recurring(name: String, call: Box<dyn Fn() -> () + Send + Sync>, interval: u64) -> Self {
+    pub fn recurring(name: String, call: Box<dyn Fn() + Send + Sync>, interval: u64) -> Self {
         let id = rand::rng().random::<u32>();
         Task {
             id,
@@ -44,6 +44,7 @@ pub struct Scheduler {
     running: AtomicBool,
     recurring_tasks: Arc<Mutex<Vec<(Instant, Task)>>>,
     worker_count: usize,
+    worker_threads: Vec<thread::JoinHandle<()>>,
     started: Instant,
     last_interval_check: Arc<Mutex<Instant>>,
 }
@@ -90,6 +91,7 @@ impl Scheduler {
             receiver: Arc::new(Mutex::new(rx)),
             running: AtomicBool::new(false),
             worker_count: num_cpus::get(),
+            worker_threads: Vec::new(),
             recurring_tasks: Arc::new(Mutex::new(Vec::new())),
             started: Instant::now(),
             last_interval_check: Arc::new(Mutex::new(Instant::now())),
@@ -140,10 +142,10 @@ impl Scheduler {
         }
     }
 
-    fn start_worker_threads(&self) {
+    fn start_worker_threads(&mut self) {
         for _ in 0..self.worker_count {
             let receiver_clone = Arc::clone(&self.receiver);
-            thread::spawn(move || {
+            let worker_thread = thread::spawn(move || {
                 loop {
                     let receiver = receiver_clone.lock().unwrap();
                     match receiver.recv() {
@@ -163,10 +165,11 @@ impl Scheduler {
                     }
                 }
             });
+            self.worker_threads.push(worker_thread);
         }
     }
 
-    fn start_recurring_worker_threads(&self) {
+    fn start_recurring_worker_threads(&mut self) {
         {
             let mut interval = self.last_interval_check.lock().unwrap();
             *interval = Instant::now();
@@ -177,7 +180,7 @@ impl Scheduler {
         let last_interval_check = Arc::clone(&self.last_interval_check);
         let sender = self.sender.clone();
         let started = self.started.clone();
-        thread::spawn(move || {
+        let recurring_worker_thread = thread::spawn(move || {
             loop {
                 let to_enqueue_taks = {
                     let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
@@ -219,5 +222,25 @@ impl Scheduler {
                 thread::sleep(Duration::from_secs(1)); // Sleep for a second before checking again
             }
         });
+
+        self.worker_threads.push(recurring_worker_thread);
+    }
+
+    pub fn stop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        let threads = std::mem::take(&mut self.worker_threads);
+
+        for thread in threads {
+            if let Err(e) = thread.join() {
+                eprintln!("Error joining thread: {:?}", e);
+            }
+        }
+        println!("Scheduler stopped");
+    }
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

@@ -228,7 +228,6 @@ impl Scheduler {
         let recurring_tasks = Arc::clone(&self.recurring_tasks);
         let last_interval_check = Arc::clone(&self.last_interval_check);
         let sender = self.sender.clone();
-        let started = self.started.clone();
         let running = Arc::clone(&self.running);
         let recurring_worker_thread = thread::spawn(move || {
             loop {
@@ -238,9 +237,15 @@ impl Scheduler {
                 }
                 let now = Local::now();
 
+                println!("Recurring worker thread checking tasks at {:?}", now,);
+
                 let sleep_duration = {
                     let recurring_tasks_guard = recurring_tasks.lock().unwrap();
                     if let Some(next_task) = recurring_tasks_guard.peek() {
+                        println!(
+                            "Next task to run: {} at {:?} and current time is {:?}",
+                            next_task.task.name, next_task.execution_time, now
+                        );
                         if next_task.execution_time <= now {
                             // Task is already due, process immediately
                             0
@@ -259,6 +264,7 @@ impl Scheduler {
 
                 // Sleep only until the next task is due (or for a short time if no tasks)
                 if sleep_duration > 0 {
+                    println!("Recurring worker thread sleeping for {} ms", sleep_duration);
                     thread::sleep(Duration::from_millis(sleep_duration as u64));
                     continue;
                 }
@@ -312,10 +318,6 @@ impl Scheduler {
                     let mut t = last_interval_check.lock().unwrap();
                     *t = Local::now();
                 }
-                println!(
-                    "Recurring worker thread checking tasks at {:?}",
-                    Local::now(),
-                );
             }
         });
 

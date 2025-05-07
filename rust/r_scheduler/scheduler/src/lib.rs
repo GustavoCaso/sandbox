@@ -71,11 +71,27 @@ impl fmt::Debug for Task {
 }
 
 #[derive(PartialEq, PartialOrd, Eq)]
-struct ScheduledTask(Instant, Task);
+struct ScheduledTask {
+    execution_time: DateTime<Local>,
+    task: Task,
+}
+
+impl ScheduledTask {
+    fn next_event(&self) -> ScheduledTask {
+        let mut next_execution_time = self.execution_time;
+        if let Some(interval) = self.task.interval {
+            next_execution_time = next_execution_time + chrono::Duration::seconds(interval as i64);
+        }
+        ScheduledTask {
+            execution_time: next_execution_time,
+            task: self.task.clone(),
+        }
+    }
+}
 
 impl Ord for ScheduledTask {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.0.cmp(&self.0)
+        other.execution_time.cmp(&self.execution_time)
     }
 }
 
@@ -86,8 +102,8 @@ pub struct Scheduler {
     recurring_tasks: Arc<Mutex<BinaryHeap<ScheduledTask>>>,
     worker_count: usize,
     worker_threads: Vec<thread::JoinHandle<()>>,
-    started: Instant,
-    last_interval_check: Arc<Mutex<Instant>>,
+    started: DateTime<Local>,
+    last_interval_check: Arc<Mutex<DateTime<Local>>>,
 }
 
 pub struct ScheduleError {
@@ -108,22 +124,6 @@ impl std::fmt::Debug for ScheduleError {
 
 impl std::error::Error for ScheduleError {}
 
-// Convert an Instant to a human-readable string
-fn format_instant(instant: &Instant, start: &Instant) -> String {
-    // Calculate duration since start
-    let duration = instant.duration_since(*start);
-
-    // Convert to current time (approximation)
-    let now = SystemTime::now();
-    let target_time = now + duration;
-
-    // Convert to DateTime for formatting
-    let datetime: DateTime<Local> = target_time.into();
-
-    // Format as a readable string
-    datetime.format("%H:%M:%S").to_string()
-}
-
 impl Scheduler {
     pub fn new() -> Self {
         let (tx, rx) = channel::<Task>();
@@ -135,8 +135,8 @@ impl Scheduler {
             worker_count: num_cpus::get(),
             worker_threads: Vec::new(),
             recurring_tasks: Arc::new(Mutex::new(BinaryHeap::<ScheduledTask>::new())),
-            started: Instant::now(),
-            last_interval_check: Arc::new(Mutex::new(Instant::now())),
+            started: Local::now(),
+            last_interval_check: Arc::new(Mutex::new(Local::now())),
         }
     }
 
@@ -148,7 +148,7 @@ impl Scheduler {
             self.start_recurring_worker_threads();
 
             self.running.store(true, AtomicOrdering::Relaxed);
-            self.started = Instant::now();
+            self.started = Local::now();
         }
 
         // Scheduling logic goes here
@@ -157,15 +157,17 @@ impl Scheduler {
         if task.interval.is_some() {
             // If the task is recurring, send it to the recurring receiver
             let interval = task.interval.unwrap();
-            let now = Instant::now();
-            let next_run = now + Duration::from_secs(interval);
+            let now = Local::now();
+            let execution_time = now + chrono::Duration::seconds(interval as i64);
             let mut recurring_tasks = self.recurring_tasks.lock().unwrap();
             println!(
                 "Recurring task scheduled {} to run at {:?}",
-                task.name,
-                format_instant(&next_run, &self.started)
+                task.name, execution_time
             );
-            recurring_tasks.push(ScheduledTask(next_run, task));
+            recurring_tasks.push(ScheduledTask {
+                execution_time,
+                task,
+            });
             Ok(())
         } else {
             // If the task is not recurring, send it to the worker threads
@@ -219,7 +221,7 @@ impl Scheduler {
     fn start_recurring_worker_threads(&mut self) {
         {
             let mut interval = self.last_interval_check.lock().unwrap();
-            *interval = Instant::now();
+            *interval = Local::now();
         }
 
         // Clone the references to shared state
@@ -234,40 +236,42 @@ impl Scheduler {
                     println!("Recurring worker thread stopping");
                     return;
                 }
-                let now = Instant::now();
+                let now = Local::now();
 
                 let sleep_duration = {
                     let recurring_tasks_guard = recurring_tasks.lock().unwrap();
                     if let Some(next_task) = recurring_tasks_guard.peek() {
-                        if next_task.0 <= now {
+                        if next_task.execution_time <= now {
                             // Task is already due, process immediately
-                            Duration::from_millis(0)
+                            0
                         } else {
                             // Calculate exact time until next task
-                            let wait_time = next_task.0.duration_since(now);
+                            let wait_time = next_task.execution_time.timestamp_millis()
+                                - now.timestamp_millis();
                             // Use a minimum sleep to avoid busy waiting
-                            std::cmp::max(wait_time, Duration::from_millis(10))
+                            std::cmp::max(wait_time, 10 as i64)
                         }
                     } else {
                         // No tasks in queue, check again in 100ms
-                        Duration::from_millis(100)
+                        100
                     }
                 };
 
                 // Sleep only until the next task is due (or for a short time if no tasks)
-                if sleep_duration.as_millis() > 0 {
-                    thread::sleep(sleep_duration);
+                if sleep_duration > 0 {
+                    thread::sleep(Duration::from_millis(sleep_duration as u64));
+                    continue;
                 }
 
                 // Process all tasks that are due now
-                let now = Instant::now(); // Update time after sleeping
+                let now = Local::now(); // Update time after sleeping
                 let mut tasks_to_reschedule = Vec::new();
 
                 {
                     let mut recurring_tasks_guard = recurring_tasks.lock().unwrap();
 
                     while let Some(event) = recurring_tasks_guard.peek() {
-                        if event.0 > now {
+                        if event.execution_time > now {
                             break;
                         }
                         // Remove the task from the heap
@@ -280,26 +284,20 @@ impl Scheduler {
                 for event in &tasks_to_reschedule {
                     // Enqueue the task to the sender
                     println!(
-                        "Recurring task {} due at {:?}, executing at {:?}",
-                        event.1.name,
-                        format_instant(&event.0, &started),
-                        format_instant(&now, &started)
+                        "Recurring task {} due at {:?}, enqueuing at {:?}",
+                        event.task.name,
+                        &event.execution_time,
+                        Local::now(),
                     );
 
-                    if let Err(e) = sender.send(event.1.clone()) {
+                    if let Err(e) = sender.send(event.task.clone()) {
                         println!("Failed to send task: {}", e);
                     }
                 }
 
                 let rescheduled_tasks: Vec<_> = tasks_to_reschedule
                     .iter()
-                    .map(|event| {
-                        let interval = event.1.interval.unwrap();
-                        // Schedule from the original due time, not from now
-                        // This prevents drift when tasks are delayed
-                        let next_run = event.0 + Duration::from_secs(interval);
-                        ScheduledTask(next_run, event.1.clone())
-                    })
+                    .map(|event| event.next_event())
                     .collect();
 
                 if !rescheduled_tasks.is_empty() {
@@ -312,11 +310,11 @@ impl Scheduler {
                 // Update the last interval check time
                 {
                     let mut t = last_interval_check.lock().unwrap();
-                    *t = Instant::now();
+                    *t = Local::now();
                 }
                 println!(
                     "Recurring worker thread checking tasks at {:?}",
-                    format_instant(&now, &started)
+                    Local::now(),
                 );
             }
         });

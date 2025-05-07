@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use scheduler::Scheduler;
 use scheduler::Task;
 use std::cmp::Ordering;
@@ -17,7 +18,7 @@ fn main() {
         let recurring_task = Task::recurring(
             format!("Recurring Task {}", i).to_string(),
             Box::new(move || {
-                println!("Executing Recurring Task {}", i);
+                println!("Executing Recurring Task {} at {}", i, Local::now());
             }),
             5 + i,
         );

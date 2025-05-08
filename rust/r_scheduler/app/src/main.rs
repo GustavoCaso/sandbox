@@ -8,13 +8,15 @@ fn main() {
     for i in 0..10 {
         let task = Task::new(
             format!("Task {}", i).to_string(),
+            None,
             Box::new(move || {
                 println!("Executing Task {}", i);
             }),
         );
 
-        let recurring_task = Task::recurring(
+        let recurring_task = Task::new(
             format!("Recurring Task {}", i).to_string(),
+            Some(5 + i),
             Box::new(move || {
                 println!(
                     "Executing Recurring Task {} at {}",
@@ -22,7 +24,6 @@ fn main() {
                     Local::now().to_rfc2822()
                 );
             }),
-            5 + i,
         );
 
         let _ = scheduler.schedule(task);

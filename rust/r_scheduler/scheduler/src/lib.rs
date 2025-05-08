@@ -20,23 +20,13 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(name: String, call: Box<dyn Fn() + Send + Sync>) -> Self {
+    pub fn new(name: String, interval: Option<u64>, call: Box<dyn Fn() + Send + Sync>) -> Self {
         let id = rand::rng().random::<u32>();
         Task {
             id,
             name,
             call: Arc::new(call),
-            interval: None,
-        }
-    }
-
-    pub fn recurring(name: String, call: Box<dyn Fn() + Send + Sync>, interval: u64) -> Self {
-        let id = rand::rng().random::<u32>();
-        Task {
-            id,
-            name,
-            call: Arc::new(call),
-            interval: Some(interval),
+            interval,
         }
     }
 }

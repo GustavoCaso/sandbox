@@ -127,7 +127,10 @@ impl Scheduler {
     pub fn schedule(&mut self, task: Task) -> Result<(), ScheduleError> {
         if !self.running.load(AtomicOrdering::Relaxed) {
             // Start the worker threads
-            println!("Starting worker threads with {} workers", self.worker_count);
+            println!(
+                "[scheduler] Starting worker threads with {} workers",
+                self.worker_count
+            );
             self.start_worker_threads();
             self.start_recurring_worker_threads();
 
@@ -135,8 +138,6 @@ impl Scheduler {
             self.started = Local::now();
         }
 
-        // Scheduling logic goes here
-        println!("Scheduling task: {}", task.name);
         // Send the task to the receiver
         if task.interval.is_some() {
             // If the task is recurring, send it to the recurring receiver
@@ -145,7 +146,7 @@ impl Scheduler {
             let execution_time = now + chrono::Duration::seconds(interval as i64);
             let mut recurring_tasks = self.recurring_tasks.lock().unwrap();
             println!(
-                "Recurring task scheduled {} to run at {}",
+                "[scheduler] Recurring task scheduled {} to run at {}",
                 task.name,
                 execution_time.to_rfc2822()
             );
@@ -155,12 +156,10 @@ impl Scheduler {
             });
             Ok(())
         } else {
+            println!("[scheduler] Scheduling task: {}", task.name);
             // If the task is not recurring, send it to the worker threads
             match self.sender.send(task) {
-                Ok(_) => {
-                    println!("Task sent to worker thread");
-                    Ok(())
-                }
+                Ok(_) => Ok(()),
                 Err(e) => {
                     println!("Failed to send task: {}", e);
                     return Err(ScheduleError {
@@ -172,7 +171,7 @@ impl Scheduler {
     }
 
     fn start_worker_threads(&mut self) {
-        for _ in 0..self.worker_count {
+        for worker_id in 0..self.worker_count {
             let receiver_clone = Arc::clone(&self.receiver);
             let worker_thread = thread::spawn(move || {
                 loop {
@@ -180,20 +179,17 @@ impl Scheduler {
                     match receiver.recv_timeout(Duration::from_secs(1)) {
                         Ok(task) => {
                             drop(receiver); // Drop the lock to avoid deadlock
-                            if task.interval.is_some() {
-                                println!("Recurring task executing: {}", task.name);
-                            } else {
-                                println!("Task executing: {}", task.name);
-                            }
+                            println!("[worker-{}] Executing task {}", worker_id, task.name);
                             (task.call)();
                         }
                         Err(RecvTimeoutError::Timeout) => {
                             drop(receiver);
+                            println!("[worker-{}] Timeout", worker_id);
                             // Just a timeout, check running status and continue
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => {
-                            println!("Sender closed");
+                            println!("[worker-{}] Sender closed", worker_id);
                             break;
                         }
                     }
@@ -217,21 +213,18 @@ impl Scheduler {
         let recurring_worker_thread = thread::spawn(move || {
             loop {
                 if !running.load(AtomicOrdering::Relaxed) {
-                    println!("Recurring worker thread stopping");
+                    println!("[recurring-worker] thread stopping");
                     return;
                 }
                 let now = Local::now();
 
-                println!(
-                    "Recurring worker thread checking tasks at {}",
-                    now.to_rfc2822(),
-                );
+                println!("[recurring-worker] checking tasks at {}", now.to_rfc2822(),);
 
                 let sleep_duration = {
                     let recurring_tasks_guard = recurring_tasks.lock().unwrap();
                     if let Some(next_task) = recurring_tasks_guard.peek() {
                         println!(
-                            "Next task to run: {} at {} and current time is {}",
+                            "[recurring-worker] Next task to run: {} at {} and current time is {}",
                             next_task.task.name,
                             next_task.execution_time.to_rfc2822(),
                             now.to_rfc2822()
@@ -255,7 +248,7 @@ impl Scheduler {
                 // Sleep only until the next task is due (or for a short time if no tasks)
                 if sleep_duration > 0 {
                     println!(
-                        "Recurring worker thread sleeping for {} ms at {}",
+                        "[recurring-worker] sleeping for {} ms at {}",
                         sleep_duration,
                         Local::now().to_rfc2822()
                     );
@@ -281,17 +274,13 @@ impl Scheduler {
                 }
 
                 // Send the tasks to the worker threads
+                println!(
+                    "[recurring-worker] Sending {} tasks to worker threads",
+                    tasks_to_reschedule.len()
+                );
                 for event in &tasks_to_reschedule {
-                    // Enqueue the task to the sender
-                    println!(
-                        "Recurring task {} due at {}, enqueuing at {}",
-                        event.task.name,
-                        event.execution_time.to_rfc2822(),
-                        Local::now().to_rfc2822(),
-                    );
-
                     if let Err(e) = sender.send(event.task.clone()) {
-                        println!("Failed to send task: {}", e);
+                        println!("[recurring-worker] Failed to send task: {}", e);
                     }
                 }
 

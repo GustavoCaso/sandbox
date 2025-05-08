@@ -10,7 +10,7 @@ fn main() {
             format!("Task {}", i).to_string(),
             None,
             Box::new(move || {
-                println!("Executing Task {}", i);
+                println!("[app] Executing Task {}", i);
             }),
         );
 
@@ -19,7 +19,7 @@ fn main() {
             Some(5 + i),
             Box::new(move || {
                 println!(
-                    "Executing Recurring Task {} at {}",
+                    "[app] Executing Recurring Task {} at {}",
                     i,
                     Local::now().to_rfc2822()
                 );

@@ -9,7 +9,7 @@ use std::sync::mpsc::channel;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Task {
@@ -41,25 +41,6 @@ impl Task {
     }
 }
 
-impl PartialEq for Task {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.name == other.name && self.interval == other.interval
-    }
-}
-impl Eq for Task {}
-
-impl Ord for Task {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.interval.unwrap().cmp(&self.interval.unwrap())
-    }
-}
-
-impl PartialOrd for Task {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -70,7 +51,7 @@ impl fmt::Debug for Task {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Eq)]
+#[derive(Clone, Debug)]
 struct ScheduledTask {
     execution_time: DateTime<Local>,
     task: Task,
@@ -95,6 +76,19 @@ impl Ord for ScheduledTask {
     }
 }
 
+impl PartialOrd for ScheduledTask {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for ScheduledTask {
+    fn eq(&self, other: &Self) -> bool {
+        self.execution_time == other.execution_time
+    }
+}
+
+impl Eq for ScheduledTask {}
 pub struct Scheduler {
     receiver: Arc<Mutex<Receiver<Task>>>,
     sender: Sender<Task>,
@@ -161,8 +155,9 @@ impl Scheduler {
             let execution_time = now + chrono::Duration::seconds(interval as i64);
             let mut recurring_tasks = self.recurring_tasks.lock().unwrap();
             println!(
-                "Recurring task scheduled {} to run at {:?}",
-                task.name, execution_time
+                "Recurring task scheduled {} to run at {}",
+                task.name,
+                execution_time.to_rfc2822()
             );
             recurring_tasks.push(ScheduledTask {
                 execution_time,
@@ -237,14 +232,19 @@ impl Scheduler {
                 }
                 let now = Local::now();
 
-                println!("Recurring worker thread checking tasks at {:?}", now,);
+                println!(
+                    "Recurring worker thread checking tasks at {}",
+                    now.to_rfc2822(),
+                );
 
                 let sleep_duration = {
                     let recurring_tasks_guard = recurring_tasks.lock().unwrap();
                     if let Some(next_task) = recurring_tasks_guard.peek() {
                         println!(
-                            "Next task to run: {} at {:?} and current time is {:?}",
-                            next_task.task.name, next_task.execution_time, now
+                            "Next task to run: {} at {} and current time is {}",
+                            next_task.task.name,
+                            next_task.execution_time.to_rfc2822(),
+                            now.to_rfc2822()
                         );
                         if next_task.execution_time <= now {
                             // Task is already due, process immediately
@@ -264,7 +264,11 @@ impl Scheduler {
 
                 // Sleep only until the next task is due (or for a short time if no tasks)
                 if sleep_duration > 0 {
-                    println!("Recurring worker thread sleeping for {} ms", sleep_duration);
+                    println!(
+                        "Recurring worker thread sleeping for {} ms at {}",
+                        sleep_duration,
+                        Local::now().to_rfc2822()
+                    );
                     thread::sleep(Duration::from_millis(sleep_duration as u64));
                     continue;
                 }
@@ -290,10 +294,10 @@ impl Scheduler {
                 for event in &tasks_to_reschedule {
                     // Enqueue the task to the sender
                     println!(
-                        "Recurring task {} due at {:?}, enqueuing at {:?}",
+                        "Recurring task {} due at {}, enqueuing at {}",
                         event.task.name,
-                        &event.execution_time,
-                        Local::now(),
+                        event.execution_time.to_rfc2822(),
+                        Local::now().to_rfc2822(),
                     );
 
                     if let Err(e) = sender.send(event.task.clone()) {
@@ -343,5 +347,158 @@ impl Scheduler {
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use std::collections::BinaryHeap;
+
+    // Helper function to create a task with a given name and interval
+    fn create_task(name: &str, interval: u64) -> Task {
+        Task {
+            id: rand::rng().random::<u32>(),
+            name: name.to_string(),
+            call: Arc::new(Box::new(|| {})), // Empty function
+            interval: Some(interval),
+        }
+    }
+
+    // Helper function to create a scheduled task with a specific execution time
+    fn create_scheduled_task(name: &str, interval: u64) -> ScheduledTask {
+        let now = Local::now();
+        let execution_time = now + chrono::Duration::seconds(interval as i64);
+        ScheduledTask {
+            execution_time,
+            task: create_task(name, interval),
+        }
+    }
+
+    #[test]
+    fn test_scheduled_task_ordering() {
+        // Create tasks with different execution times
+        let task1 = create_scheduled_task("Task 1", 5); // Due in 1 minute
+        let task2 = create_scheduled_task("Task 2", 10); // Due in 2 minutes
+        let task3 = create_scheduled_task("Task 3", 15); // Due in 3 minutes
+
+        // Binary heap should prioritize earlier execution times
+        let mut heap = BinaryHeap::new();
+        heap.push(task3.clone()); // Add furthest task first
+        heap.push(task1.clone()); // Add earliest task
+        heap.push(task2.clone()); // Add middle task
+
+        // The earliest task should be at the top of the heap
+        assert_eq!(heap.peek().unwrap().task.name, "Task 1");
+
+        let popped = heap.pop().unwrap();
+        assert_eq!(popped.task.name, "Task 1"); // First to execute
+
+        let popped = heap.pop().unwrap();
+        assert_eq!(popped.task.name, "Task 2"); // Second to execute
+
+        let popped = heap.pop().unwrap();
+        assert_eq!(popped.task.name, "Task 3"); // Last to execute
+
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn test_scheduled_task_same_time_stability() {
+        // Create a fixed reference time for testing
+        let reference_time = Local.with_ymd_and_hms(2025, 5, 1, 12, 0, 0).unwrap();
+
+        // Create tasks with the same execution time but different IDs and intervals
+        let task1 = ScheduledTask {
+            execution_time: reference_time,
+            task: Task {
+                id: 1,
+                name: "Task 1".to_string(),
+                call: Arc::new(Box::new(|| {})),
+                interval: Some(5),
+            },
+        };
+
+        let task2 = ScheduledTask {
+            execution_time: reference_time,
+            task: Task {
+                id: 2,
+                name: "Task 2".to_string(),
+                call: Arc::new(Box::new(|| {})),
+                interval: Some(5),
+            },
+        };
+
+        // When two tasks have identical execution times, the ordering should
+        // be consistent but is determined by the heap implementation
+        let mut heap = BinaryHeap::new();
+        heap.push(task1.clone());
+        heap.push(task2.clone());
+
+        // Check that the heap has two elements
+        assert_eq!(heap.len(), 2);
+
+        // Both tasks have the same execution time, so we'll just verify
+        // that they're processed in some order
+        let first = heap.pop().unwrap();
+        let second = heap.pop().unwrap();
+
+        assert!(
+            (first.task.name == "Task 1" && second.task.name == "Task 2")
+                || (first.task.name == "Task 2" && second.task.name == "Task 1")
+        );
+    }
+
+    #[test]
+    fn test_next_event_calculation() {
+        // Create a task with a 5-minute interval
+        let task = create_task("Recurring Task", 300); // 5 minutes = 300 seconds
+
+        // Create a scheduled task with execution time now
+        let now = Local::now();
+        let scheduled_task = ScheduledTask {
+            execution_time: now,
+            task,
+        };
+
+        // Calculate the next event
+        let next_event = scheduled_task.next_event();
+
+        // The next event should be 5 minutes after the original
+        let expected_time = now + chrono::Duration::seconds(300);
+
+        // Allow for a small margin of error due to execution time
+        let diff = (next_event.execution_time.timestamp() - expected_time.timestamp()).abs();
+        assert!(diff <= 1, "Time difference too large: {}", diff);
+    }
+
+    #[test]
+    fn test_reschedule_task_heap_ordering() {
+        // Create tasks with different execution times
+        let task1 = create_scheduled_task("Task A", 9); // Due in 1 minute, 5s interval
+        let task2 = create_scheduled_task("Task B", 10); // Due in 2 minutes, 10s interval
+
+        let mut heap = BinaryHeap::new();
+        heap.push(task1.clone());
+        heap.push(task2.clone());
+
+        println!("Heap internals: {:?}", heap);
+
+        // Pop the first task (Task A)
+        let first_task = heap.pop().unwrap();
+        assert_eq!(first_task.task.name, "Task A");
+
+        println!("Heap internals: {:?}", heap);
+
+        // Generate the next event for Task A and add it back to the heap
+        let next_task_a = first_task.next_event();
+        heap.push(next_task_a);
+
+        println!("Heap internals: {:?}", heap);
+
+        // Now, Task B should be at the top since the new Task A is scheduled further out
+        let next_to_execute = heap.peek().unwrap();
+        assert_eq!(next_to_execute.task.name, "Task B");
     }
 }

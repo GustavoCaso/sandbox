@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = [
+  "add/add_one",
+  "add/adder",
+  "aggregator",
+  "another_function",
+  "cargo",
+  "closures",
+  "enums",
+  "errors",
+  "generics",
+  "guessing_game",
+  "hash_map",
+  "minigrep",
+  "ownership",
+  "rectangles",
+  "strings",
+  "structs",
+  "variables",
+  "vectors",
+]
+
+[workspace.package]
+edition = "2024"
+
+# This configuration allows all the projects to be built from the root
+# while maintaining their independence as binary crates

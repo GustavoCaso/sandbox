@@ -1,0 +1,6 @@
+[package]
+name = "weak_pointers"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]

@@ -11,14 +11,14 @@ members = [
   "errors",
   "generics",
   "guessing_game",
-  "hash_map",
+  "hash_map", "messenger",
   "minigrep",
-  "ownership",
+  "ownership", "pointers",
   "rectangles",
   "strings",
   "structs",
   "variables",
-  "vectors",
+  "vectors", "weak_pointers",
 ]
 
 [workspace.package]

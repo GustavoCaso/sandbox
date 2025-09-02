@@ -1,10 +1,8 @@
 [package]
-name = "adder"
+name = "add_one"
 version = "0.1.0"
 edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-add_one = { path = "../add_one" }
-rand = "0.8.5"

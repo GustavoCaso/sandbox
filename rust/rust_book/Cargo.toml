@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-  "add/add_one",
-  "add/adder",
+  "add_one",
+  "adder",
   "aggregator",
   "another_function",
   "cargo",
@@ -23,6 +23,9 @@ members = [
 
 [workspace.package]
 edition = "2024"
+
+[workspace.dependencies]
+rand = "0.8.5"
 
 # This configuration allows all the projects to be built from the root
 # while maintaining their independence as binary crates

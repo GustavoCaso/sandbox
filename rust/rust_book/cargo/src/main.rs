@@ -1,3 +1,5 @@
+use cargo::PrimaryColor;
+
 fn main() {
-    println!("Hello, world!");
+    println!("{:?}", PrimaryColor::Blue)
 }

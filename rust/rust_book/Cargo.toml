@@ -16,7 +16,7 @@ members = [
   "ownership", "pointers",
   "rectangles",
   "strings",
-  "structs",
+  "structs", "threads",
   "variables",
   "vectors", "weak_pointers",
 ]

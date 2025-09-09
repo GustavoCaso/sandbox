@@ -11,7 +11,7 @@ members = [
   "errors",
   "generics",
   "guessing_game",
-  "hash_map", "messenger",
+  "hash_map", "learn-async", "messenger",
   "minigrep",
   "ownership", "pointers",
   "rectangles",

@@ -1,5 +1,4 @@
 [workspace]
-resolver = "3"
 members = [
   "add_one",
   "adder",
@@ -11,14 +10,20 @@ members = [
   "errors",
   "generics",
   "guessing_game",
-  "hash_map", "learn-async", "messenger",
+  "hash_map",
+  "learn-async",
+  "learn-unsafe",
+  "messenger",
   "minigrep",
-  "ownership", "pointers",
+  "ownership",
+  "pointers",
   "rectangles",
   "strings",
-  "structs", "threads",
+  "structs",
+  "threads",
   "variables",
-  "vectors", "weak_pointers",
+  "vectors",
+  "weak_pointers",
 ]
 
 [workspace.package]
